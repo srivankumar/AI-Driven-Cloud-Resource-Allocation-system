@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Server Allocation Dashboard</title>
+  <style>
+    :root {
+      --bg1: #e9f3ff;
+      --bg2: #f8fbff;
+      --panel: #ffffff;
+      --ink: #0f2233;
+      --muted: #4f6474;
+      --accent: #0d7c9f;
+      --accent2: #1f9a68;
+      --danger: #c0392b;
+      --border: #d8e5ef;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; overflow: hidden; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      color: var(--ink);
+      background: linear-gradient(140deg, var(--bg1), var(--bg2));
+    }
+    .wrap {
+      height: 100%;
+      max-width: 1300px;
+      margin: 0 auto;
+      padding: 14px;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 10px;
+    }
+    .header, .controls, .main { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
+    .header { padding: 10px 14px; }
+    .header h1 { margin: 0; font-size: 1.25rem; }
+    .header p { margin: 3px 0 0; color: var(--muted); font-size: .9rem; }
+
+    .controls {
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .btns { display: flex; gap: 8px; }
+    button {
+      border: 0;
+      border-radius: 9px;
+      padding: 9px 14px;
+      color: #fff;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    #nextBtn { background: var(--accent); }
+    #autoBtn { background: var(--accent2); }
+    #autoBtn.running { background: #a33b12; }
+    .status { color: var(--muted); font-size: .92rem; }
+
+    .main {
+      padding: 10px;
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 10px;
+      min-height: 0;
+    }
+    .left, .right {
+      display: grid;
+      gap: 10px;
+      min-height: 0;
+    }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+      background: #fcfeff;
+    }
+    .label { font-size: .85rem; color: var(--muted); }
+    .value { font-size: 1.5rem; font-weight: 700; margin-top: 2px; }
+    .chartCard, .tableCard {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #fcfeff;
+      padding: 8px;
+      min-height: 0;
+    }
+    .chartTitle, .tableTitle { margin: 0 0 8px; font-size: .95rem; }
+    canvas { width: 100%; height: 100%; }
+    .chartBox { height: 250px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+    th, td { padding: 7px; border-bottom: 1px solid #ebf2f8; text-align: left; }
+    thead th { position: sticky; top: 0; background: #f5fbff; }
+    .tblWrap { height: 100%; overflow: auto; }
+    .errLow { color: #107a3d; font-weight: 700; }
+    .errMid { color: #916200; font-weight: 700; }
+    .errHigh { color: var(--danger); font-weight: 700; }
+
+    @media (max-width: 980px) {
+      .main { grid-template-columns: 1fr; }
+      .chartBox { height: 220px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="header">
+      <h1>Real-Time Cloud Server Predictor</h1>
+      <p>Sequential mode: predict -> actual arrives -> online SGD update</p>
+    </section>
+
+    <section class="controls">
+      <div class="btns">
+        <button id="nextBtn">Next Prediction</button>
+        <button id="autoBtn">Auto Run</button>
+      </div>
+      <div class="status" id="status">Ready</div>
+    </section>
+
+    <section class="main">
+      <div class="left">
+        <div class="cards">
+          <div class="card"><div class="label">Actual Servers Needed</div><div class="value" id="actualServers">-</div></div>
+          <div class="card"><div class="label">Predicted Servers</div><div class="value" id="predServers">-</div></div>
+          <div class="card"><div class="label">Warm Servers Used</div><div class="value" id="warmServers">0/10</div></div>
+          <div class="card"><div class="label">Prediction Gap</div><div class="value" id="predGap">-</div></div>
+        </div>
+        <div class="chartCard">
+          <h3 class="chartTitle">Last 24 Predictions (Actual vs Predicted)</h3>
+          <div class="chartBox"><canvas id="chart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="right">
+        <div class="tableCard" style="height:100%; display:flex; flex-direction:column;">
+          <h3 class="tableTitle">Recent Records</h3>
+          <div class="tblWrap">
+            <table>
+              <thead><tr><th>Time</th><th>Pred</th><th>Actual</th><th>Error</th></tr></thead>
+              <tbody id="rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const nextBtn = document.getElementById("nextBtn");
+    const autoBtn = document.getElementById("autoBtn");
+    const statusEl = document.getElementById("status");
+    const rowsEl = document.getElementById("rows");
+
+    const actualServersEl = document.getElementById("actualServers");
+    const predServersEl = document.getElementById("predServers");
+    const warmServersEl = document.getElementById("warmServers");
+    const predGapEl = document.getElementById("predGap");
+
+    const canvas = document.getElementById("chart");
+    const ctx = canvas.getContext("2d");
+
+    let timerId = null;
+    const last24 = [];
+
+    function absErrClass(v) {
+      const a = Math.abs(v);
+      if (a < 5) return "errLow";
+      if (a < 12) return "errMid";
+      return "errHigh";
+    }
+
+    function addRecord(d) {
+      last24.push({ time: d.time.slice(11, 16), predicted: d.predicted, actual: d.actual });
+      if (last24.length > 24) last24.shift();
+
+      const tr = document.createElement("tr");
+      const predInt = Math.round(Number(d.predicted));
+      const actualInt = Math.round(Number(d.actual));
+      const errorInt = actualInt - predInt;
+      tr.innerHTML = `
+        <td>${d.time}</td>
+        <td>${predInt}</td>
+        <td>${actualInt}</td>
+        <td class="${absErrClass(errorInt)}">${errorInt}</td>
+      `;
+      rowsEl.prepend(tr);
+      while (rowsEl.children.length > 24) rowsEl.removeChild(rowsEl.lastChild);
+
+      const predServers = Math.max(0, Math.round(Number(d.predicted)));
+      const actualServers = Math.max(0, Math.round(Number(d.actual)));
+
+      actualServersEl.textContent = actualServers;
+      predServersEl.textContent = predServers;
+      const gap = actualServers - predServers;
+      const warmUsed = gap > 0 ? Math.min(10, gap) : 0;
+      warmServersEl.textContent = `${warmUsed}/10`;
+      predGapEl.textContent = gap > 0 ? `-${gap}` : `+${Math.abs(gap)}`;
+
+      drawChart();
+    }
+
+    function drawChart() {
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = rect.width * devicePixelRatio;
+      canvas.height = rect.height * devicePixelRatio;
+      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+
+      const w = rect.width, h = rect.height;
+      const p = 24;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, w, h);
+
+      if (!last24.length) return;
+
+      const minV = 30;
+      const maxV = 100;
+      const rng = maxV - minV;
+
+      const plotW = w - p * 2;
+      const plotH = h - p * 2;
+
+      // Professional chart grid
+      ctx.strokeStyle = "#e7eff5";
+      ctx.lineWidth = 1;
+      const tickValues = [30, 40, 50, 60, 70, 80, 90, 100];
+      tickValues.forEach(tv => {
+        const y = p + (plotH * (1 - (tv - minV) / rng));
+        ctx.beginPath();
+        ctx.moveTo(p, y);
+        ctx.lineTo(w - p, y);
+        ctx.stroke();
+
+        ctx.fillStyle = "#7a8e9c";
+        ctx.font = "11px Segoe UI";
+        ctx.fillText(String(tv), 4, y + 4);
+      });
+
+      function clampY(v) {
+        return Math.max(minV, Math.min(maxV, v));
+      }
+
+      function drawLine(key, color) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2.8;
+        ctx.lineJoin = "round";
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        const points = [];
+        last24.forEach((d, i) => {
+          const x = p + (last24.length === 1 ? plotW / 2 : (plotW * i / (last24.length - 1)));
+          const vv = clampY(d[key]);
+          const y = p + (plotH * (1 - (vv - minV) / rng));
+          points.push({x, y});
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        ctx.fillStyle = color;
+        points.forEach(pt => {
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 3.4, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+
+      drawLine("actual", "#1f9a68");
+      drawLine("predicted", "#0d7c9f");
+
+      ctx.fillStyle = "#1f9a68";
+      ctx.fillRect(p, 8, 12, 4);
+      ctx.fillStyle = "#0d7c9f";
+      ctx.fillRect(p + 120, 8, 12, 4);
+      ctx.fillStyle = "#355467";
+      ctx.font = "12px Segoe UI";
+      ctx.fillText("Actual", p + 16, 12);
+      ctx.fillText("Predicted", p + 136, 12);
+
+      ctx.fillStyle = "#4f6474";
+      ctx.fillText("Y-axis fixed: 30 to 100", w - 160, 12);
+    }
+
+    function pauseAuto() {
+      if (timerId) clearInterval(timerId);
+      timerId = null;
+      autoBtn.textContent = "Auto Run";
+      autoBtn.classList.remove("running");
+      nextBtn.disabled = false;
+    }
+
+    async function nextPrediction() {
+      try {
+        const res = await fetch('/predict_next');
+        const data = await res.json();
+
+        if (data.done) {
+          statusEl.textContent = data.message || "Completed";
+          pauseAuto();
+          nextBtn.disabled = true;
+          return;
+        }
+
+        addRecord(data);
+        statusEl.textContent = `Step ${data.step} | Remaining ${data.remaining}`;
+      } catch (e) {
+        statusEl.textContent = "Request failed";
+        pauseAuto();
+      }
+    }
+
+    nextBtn.addEventListener('click', nextPrediction);
+
+    autoBtn.addEventListener('click', () => {
+      if (timerId) {
+        pauseAuto();
+        statusEl.textContent = "Paused";
+        return;
+      }
+      autoBtn.textContent = "Pause";
+      autoBtn.classList.add("running");
+      nextBtn.disabled = true;
+      statusEl.textContent = "Auto mode running";
+      timerId = setInterval(nextPrediction, 1000);
+      nextPrediction();
+    });
+
+    window.addEventListener('resize', drawChart);
+  </script>
+</body>
+</html>
