@@ -36,3 +36,7 @@ Thumbs.db
 # Optional large data outputs (uncomment if needed)
 # data/processed/
 # outputs/
+# Project large assets to keep local
+dataset.csv
+Ai_Driven_resource.pptx
+Research papers/
